@@ -124,6 +124,9 @@ static int ipv6first = 0;
 static int no_delay  = 0;
 static int ret_val   = 0;
 
+static int ltunnel    = 0;
+static uint16_t ltunnel_port[32];
+
 #ifdef HAVE_SETRLIMIT
 static int nofile = 0;
 #endif
@@ -621,6 +624,36 @@ connect_to_remote(EV_P_ struct addrinfo *res,
     return remote;
 }
 
+static int check_if_localhost(struct addrinfo *info)
+{
+    if (info->ai_family == AF_INET) {
+
+        long a = ntohl( ( (struct sockaddr_in *)info->ai_addr )->sin_addr.s_addr );
+        return( (a & 0xFFFFFF00) == 0x7F000000 );
+
+    } else if (info->ai_family == AF_INET6) {
+
+        return( IN6_IS_ADDR_LOOPBACK( (struct sockaddr_in6 *)info->ai_addr ) );
+
+    } else {
+
+        return 0;
+
+    }
+}
+
+static int check_ltunnel_port(uint16_t p)
+{
+    for (int i = 0; i < ltunnel; ++i) {
+
+        if (ltunnel_port[i] == p)
+            return 1;
+
+    }
+
+    return 0;
+}
+
 #ifdef USE_NFCONNTRACK_TOS
 int
 setMarkDscpCallback(enum nf_conntrack_msg_type type, struct nf_conntrack *ct, void *data)
@@ -914,6 +947,24 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         port = (*(uint16_t *)(server->buf->data + offset));
+		
+		// apply ltunnel restriction
+        if (ltunnel) {
+            // check if address is not localhost
+            if (!check_if_localhost(&info)) {
+                LOGE("ltunnel killed %s non-local connection", host);
+                report_addr(server->fd);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+            // check if port range is ok
+            if (!check_ltunnel_port(port)) {
+                LOGE("ltunnel killed forbidden port %d connection", (int)ntohs(port) );
+                report_addr(server->fd);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+        }
 
         offset += 2;
 
@@ -1589,6 +1640,29 @@ accept_cb(EV_P_ ev_io *w, int revents)
     ev_timer_start(EV_A_ & server->recv_ctx->watcher);
 }
 
+static int parse_ltunnel(char *arg)
+{
+    for (int i = 0; i < sizeof(ltunnel_port); ++i) {
+
+        if (!*arg)
+            return i;
+
+        int p = strtol(arg, &arg, 10);
+        if (!p)
+            return 0;
+
+        if ((p < 0) || (p > 65535))
+            return 0;
+
+        ltunnel_port[i] = htons( (uint16_t)p );
+
+        if (*arg == ',')
+            arg++;
+    }
+
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1632,6 +1706,7 @@ main(int argc, char **argv)
 #ifdef __linux__
         { "mptcp",           no_argument,       NULL, GETOPT_VAL_MPTCP       },
 #endif
+        { "ltunnel",         required_argument, NULL, GETOPT_VAL_LTUNNEL     },
         { NULL,                              0, NULL,                      0 }
     };
 
@@ -1676,6 +1751,11 @@ main(int argc, char **argv)
         case GETOPT_VAL_REUSE_PORT:
             reuse_port = 1;
             break;
+		case GETOPT_VAL_LTUNNEL:
+			ltunnel = parse_ltunnel(optarg);
+            if (!ltunnel)
+				LOGI("ltunnel bad format, disabled");
+			break;
         case 's':
             if (server_num < MAX_REMOTE_NUM) {
                 parse_addr(optarg, &server_addr[server_num++]);
