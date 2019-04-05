@@ -953,14 +953,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             // check if address is not localhost
             if (!check_if_localhost(&info)) {
                 LOGE("ltunnel killed %s non-local connection", host);
-                report_addr(server->fd);
+                report_addr(server->fd, MALFORMED, "ltunnel killed non-local connection");
                 close_and_free_server(EV_A_ server);
                 return;
             }
             // check if port range is ok
             if (!check_ltunnel_port(port)) {
                 LOGE("ltunnel killed forbidden port %d connection", (int)ntohs(port) );
-                report_addr(server->fd);
+                report_addr(server->fd, MALFORMED, "ltunnel killed forbidden port connection");
                 close_and_free_server(EV_A_ server);
                 return;
             }
